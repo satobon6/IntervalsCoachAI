@@ -62,7 +62,7 @@ def load_config() -> configparser.ConfigParser:
     if not loaded:
         raise RuntimeError(f"設定ファイルを読み込めません: {CONFIG_FILE}")
 
-    for section in ("INTERVALS", "OLLAMA", "DATABASE", "SYNC"):
+    for section in ("INTERVALS", "OLLAMA", "DATABASE", "SYNC", "COACH"):
         if section not in config:
             raise KeyError(f"config.iniに[{section}]セクションがありません。")
     return config
@@ -291,6 +291,18 @@ try:
     OLLAMA_MODEL = config["OLLAMA"].get("MODEL", "llama3.1:latest").strip()
     DATABASE_RELATIVE_PATH = config["DATABASE"].get("FILE", "data/intervals.db").strip()
     SYNC_DAYS = config["SYNC"].getint("DAYS",90)
+    COACH_CONFIG = {
+        "preferred_sport": config["COACH"].get("PREFERRED_SPORT","Ride").strip(),
+        "default_available_minutes": config["COACH"].getint("DEFAULT_AVAILABLE_MINUTES",60),
+        "min_sleep_hours": config["COACH"].getfloat("MIN_SLEEP_HOURS", 6.0),
+        "hrv_drop_ratio": config["COACH"].getfloat("HRV_DROP_RATIO",0.15),
+        "resting_hr_rise": config["COACH"].getfloat("RESTING_HR_RISE",5.0),
+        "tsb_low_limit": config["COACH"].getfloat("TSB_LOW_LIMIT",-15.0),
+        "recovery_duration": config["COACH"].getint("RECOVERY_DURATION",45),
+        "endurance_duration": config["COACH"].getint("ENDURANCE_DURATION",75),
+        "tempo_duration": config["COACH"].getint("TEMPO_DURATION",75),
+        "quality_duration": config["COACH"].getint("QUALITY_DURATION",60),
+    }
     DB_PATH = BASE_DIR / DATABASE_RELATIVE_PATH
     
     sync_dates = create_sync_date_range(SYNC_DAYS)
@@ -967,6 +979,7 @@ training_graph = create_training_graph(
     ollama_client=ollama_client,
     activities_builder=build_analysis_data,
     wellness_builder=build_wellness_analysis_data,
+    sport_info_builder=build_sport_info_analysis_data,
     events_builder=build_events_analysis_data,
 )
 
@@ -1204,11 +1217,36 @@ else:
     
     st.subheader("LangGraph + Ollama分析")
 
+    coach_col1, coach_col2 = st.columns(2)
+
+    with coach_col1:
+        preferred_sport = st.selectbox(
+            "次回メニューの種目",
+            options=[
+                "Ride",
+                "Run",
+                "Swim",
+            ],
+            index=0,
+        )
+
+    with coach_col2:
+        available_minutes = st.number_input(
+            "利用可能時間（分）",
+            min_value=20,
+            max_value=300,
+            value=COACH_CONFIG[
+                "default_available_minutes"
+            ],
+            step=5,
+        )
+
     request = st.text_area(
         "AIへの依頼",
         value=(
-            "トレーニング傾向を分析し、"
-            "次回に向けた一般的な提案をしてください。"
+            "現在の状態と今後の予定を踏まえて、"
+            "次回の具体的なトレーニングメニューを"
+            "1案提示してください。"
         ),
         height=100,
     )
@@ -1233,7 +1271,11 @@ else:
             initial_state = {
                 "activities_df": activities_df,
                 "wellness_df": wellness_df,
+                "wellness_sport_info_df": wellness_sport_info_df,
                 "events_df": events_df,
+                "preferred_sport": preferred_sport,
+                "available_minutes": int(available_minutes),
+                "coach_config": COACH_CONFIG,
                 "user_request": request,
                 "current_step": "分析開始",
                 "progress": 0,

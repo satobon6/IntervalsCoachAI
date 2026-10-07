@@ -4,19 +4,31 @@ from typing import Any, TypedDict
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
+import json
+import re
+from services.coach_engine import (build_coach_recommendation)
 
 class TrainingAgentState(TypedDict,total=False,):
     activities_df: pd.DataFrame
     wellness_df: pd.DataFrame
+    wellness_sport_info_df: pd.DataFrame
     events_df: pd.DataFrame
+    
+    preferred_sport: str
+    available_minutes: int
+    coach_config: dict
 
     user_request: str
 
     activities_analysis: str
     wellness_analysis: str
+    sport_info_analysis: str
     events_analysis: str
-
     analysis_data: str
+    
+    coach_recommendation: dict
+    coach_data: str
+    
     prompt: str
     answer: str
 
@@ -29,6 +41,7 @@ def create_training_graph(
     ollama_client,
     activities_builder,
     wellness_builder,
+    sport_info_builder,
     events_builder,
 ):
     """
@@ -46,7 +59,7 @@ def create_training_graph(
             実行可能なLangGraph。
     """
 
-    def validate_data(state: TrainingAgentState,) -> dict:
+    def validate_data(state: TrainingAgentState) -> dict:
         activities_df = state.get("activities_df")
 
         wellness_df = state.get("wellness_df",pd.DataFrame())
@@ -76,7 +89,7 @@ def create_training_graph(
             "progress": 20,
         }
 
-    def prepare_analysis_data(state: TrainingAgentState,) -> dict:
+    def prepare_analysis_data(state: TrainingAgentState) -> dict:
         """
         Activities、Wellness、Eventsを
         それぞれ分析用テキストへ変換する。
@@ -84,12 +97,13 @@ def create_training_graph(
 
         activities_df = state.get("activities_df",pd.DataFrame())
         wellness_df = state.get("wellness_df",pd.DataFrame())
+        sport_info_df = state.get("wellness_sport_info_df",pd.DataFrame())
         events_df = state.get("events_df",pd.DataFrame())
         activities_analysis = (activities_builder(activities_df))
         wellness_analysis = (wellness_builder(wellness_df))
         events_analysis = (events_builder(events_df))
-
-        analysis_data = "\n\n".join([activities_analysis,wellness_analysis,events_analysis])
+        sport_info_analysis = (sport_info_builder(sport_info_df))
+        analysis_data = "\n\n".join([activities_analysis,wellness_analysis,sport_info_analysis,events_analysis])
 
         return {
             "activities_analysis": activities_analysis,
@@ -103,100 +117,145 @@ def create_training_graph(
             "progress": 45,
         }
 
-    def build_prompt(state: TrainingAgentState,) -> dict:
+    def prepare_coach_data(state: TrainingAgentState) -> dict:
         """
-        Ollamaへ送信するプロンプトを作成する。
+        Pythonの決定的ルールで、
+        次回メニュー候補を作成する。
         """
 
-        user_request = state.get(
-            "user_request",
-            "",
-        ).strip()
-
-        if not user_request:
-            user_request = (
-                "トレーニング傾向を分析し、"
-                "次回に向けた一般的な提案をしてください。"
+        recommendation = (
+            build_coach_recommendation(
+                wellness_df=state.get(
+                    "wellness_df",
+                    pd.DataFrame(),
+                ),
+                sport_info_df=state.get(
+                    "wellness_sport_info_df",
+                    pd.DataFrame(),
+                ),
+                events_df=state.get(
+                    "events_df",
+                    pd.DataFrame(),
+                ),
+                available_minutes=state.get(
+                    "available_minutes",
+                    60,
+                ),
+                preferred_sport=state.get(
+                    "preferred_sport",
+                    "Ride",
+                ),
+                config=state.get(
+                    "coach_config",
+                    {},
+                ),
             )
+        )
 
+        coach_data = json.dumps(
+            recommendation,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+
+        return {
+            "coach_recommendation": (
+                recommendation
+            ),
+            "coach_data": coach_data,
+            "current_step": (
+                "次回メニュー候補作成完了"
+            ),
+            "progress": 58,
+        }
+
+    def build_prompt(state: TrainingAgentState) -> dict:
+        user_request = state.get("user_request","").strip()
         analysis_data = state["analysis_data"]
+        coach_data = state["coach_data"]
 
         prompt = f"""
-あなたは、持久系スポーツのトレーニングデータを
-客観的に整理する日本語アシスタントです。
+    あなたは、日本語のみを使用する
+    持久系スポーツのトレーニング支援アシスタントです。
 
-以下のデータを分析してください。
+    以下には、トレーニング実績、Wellness、
+    種目別eFTP、今後の予定があります。
 
-{analysis_data}
+    【分析データ】
+    {analysis_data}
 
-利用者の追加依頼:
+    【Python側で作成した次回メニュー候補】
+    {coach_data}
 
-{user_request}
+    【利用者の依頼】
+    {user_request}
 
-データの意味:
+    重要なルール:
 
-- Activitiesは、完了済みトレーニングです。
-- Wellnessは、日別の身体状態と
-  フィットネス指標です。
-- Eventsは、カレンダー上の予定です。
-- 負荷はTSS相当です。
-- フィットネスはCTLです。
-- ファティーグはATLです。
-- フォームはTSBです。
-- TSBはCTLからATLを引いた値です。
-- 強度はIFです。
-- 正規化パワーはNPです。
-- eFTPは推定FTPです。
+    - Python側のメニュー候補を基本案として使用してください。
+    - 数値、時間、強度、TSSを勝手に変更しないでください。
+    - データにない値を作らないでください。
+    - HRV、睡眠、安静時心拍から健康状態を断定しないでください。
+    - 医学的診断を行わないでください。
+    - 痛みや強い不調がある場合は実施を控える旨を記載してください。
+    - 回答はすべて自然な日本語にしてください。
+    - 韓国語、中国語などを混在させないでください。
+    - 日付は「YYYY-MM-DD時点」と記述してください。
 
-次の構成で回答してください。
+    次の形式で回答してください。
 
-## 1. 結論
+    ## 1. 現在の状態
 
-重要な特徴を3点以内で示してください。
+    - 分析基準日
+    - CTL
+    - ATL
+    - TSB
+    - Wellnessの個人内基準との比較
+    - 判断に使えなかったデータ
 
-## 2. 完了済みトレーニング
+    ## 2. 今後の予定
 
-直近7日、前の7日、直近28日の
-距離、時間、負荷、IF、NP、eFTPを説明してください。
+    - 最も近いイベント
+    - イベントまでの日数
+    - 次回メニューへの影響
 
-## 3. 現在の状態
+    ## 3. 次回トレーニングメニュー
 
-CTL、ATL、TSBと、
-取得できているWellness指標を説明してください。
+    - 目的
+    - 種目
+    - 合計時間
+    - 目標強度
+    - 想定TSS
+    - ウォームアップ
+    - メインセット
+    - クールダウン
 
-## 4. 今後の予定
+    ## 4. このメニューを選んだ理由
 
-Eventsに予定がある場合、
-今後のトレーニングやイベントを整理してください。
+    Python側のreason_codesを、
+    利用者に分かる日本語で説明してください。
 
-## 5. データ上の確認点
+    ## 5. 実施時の調整条件
 
-欠損値、取得できない指標、
-判断できない項目を明記してください。
+    - 短縮する条件
+    - 中止する条件
+    - データ不足による注意点
 
-## 6. 次回への一般的な提案
+    ## 6. 次回確認するデータ
 
-完了済みトレーニング、Wellness、予定を
-総合して、選択肢を最大3つ示してください。
-
-回答ルール:
-
-- 提供されていない数値を作らないでください。
-- 医学的な診断は行わないでください。
-- HRVや安静時心拍だけから体調を断定しないでください。
-- Wellnessがない場合は、その旨を明記してください。
-- Eventsがない場合は、予定なしと明記してください。
-- 数値には基準日または対象期間を付けてください。
-- 回答は日本語のMarkdown形式にしてください。
-""".strip()
+    トレーニング後に確認する項目を示してください。
+    """.strip()
 
         return {
             "prompt": prompt,
-            "current_step": "プロンプト作成完了",
-            "progress": 60,
+            "current_step": (
+                "コーチ用プロンプト作成完了"
+            ),
+            "progress": 70,
         }
 
-    def call_ollama(state: TrainingAgentState,) -> dict:
+    def call_ollama(state: TrainingAgentState) -> dict:
         """
         Ollamaを呼び出して分析結果を取得する。
         """
@@ -222,53 +281,68 @@ Eventsに予定がある場合、
             "progress": 100,
         }
 
-    graph_builder = StateGraph(
-        TrainingAgentState
-    )
+    def validate_answer(state: TrainingAgentState) -> dict:
+        answer = state.get("answer","")
 
-    graph_builder.add_node(
-        "validate_data",
-        validate_data,
-    )
+        if not answer.strip():
+            raise ValueError(
+                "Ollamaの回答が空です。"
+            )
 
-    graph_builder.add_node(
-        "prepare_analysis_data",
-        prepare_analysis_data,
-    )
+        # ハングル範囲
+        hangul_pattern = re.compile(
+            r"[\u1100-\u11ff"
+            r"\u3130-\u318f"
+            r"\uac00-\ud7af]"
+        )
 
-    graph_builder.add_node(
-        "build_prompt",
-        build_prompt,
-    )
+        if hangul_pattern.search(answer):
+            raise ValueError(
+                "回答にハングル文字が"
+                "含まれています。"
+            )
 
-    graph_builder.add_node(
-        "call_ollama",
-        call_ollama,
-    )
+        required_sections = [
+            "現在の状態",
+            "今後の予定",
+            "次回トレーニングメニュー",
+            "このメニューを選んだ理由",
+            "実施時の調整条件",
+        ]
 
-    graph_builder.add_edge(
-        START,
-        "validate_data",
-    )
+        missing_sections = [
+            section
+            for section in required_sections
+            if section not in answer
+        ]
 
-    graph_builder.add_edge(
-        "validate_data",
-        "prepare_analysis_data",
-    )
+        if missing_sections:
+            raise ValueError(
+                "回答に必要な章がありません: "
+                + ", ".join(missing_sections)
+            )
 
-    graph_builder.add_edge(
-        "prepare_analysis_data",
-        "build_prompt",
-    )
+        return {
+            "answer": answer,
+            "current_step": "回答検証完了",
+            "progress": 100,
+        }
 
-    graph_builder.add_edge(
-        "build_prompt",
-        "call_ollama",
-    )
+    graph_builder = StateGraph(TrainingAgentState)
 
-    graph_builder.add_edge(
-        "call_ollama",
-        END,
-    )
+    graph_builder.add_node("validate_data",validate_data)
+    graph_builder.add_node("prepare_analysis_data",prepare_analysis_data)
+    graph_builder.add_node("prepare_coach_data",prepare_coach_data)
+    graph_builder.add_node("build_prompt",build_prompt)
+    graph_builder.add_node("call_ollama",call_ollama)
+    graph_builder.add_node("validate_answer",validate_answer)
+
+    graph_builder.add_edge(START,"validate_data")
+    graph_builder.add_edge("validate_data","prepare_analysis_data")
+    graph_builder.add_edge("prepare_analysis_data","prepare_coach_data")
+    graph_builder.add_edge("prepare_coach_data","build_prompt")
+    graph_builder.add_edge("build_prompt","call_ollama")
+    graph_builder.add_edge("call_ollama","validate_answer")
+    graph_builder.add_edge("validate_answer",END)
 
     return graph_builder.compile()

@@ -1,6 +1,5 @@
 import requests
 
-
 class OllamaClient:
     """
     OllamaのローカルAPIを呼び出すためのクライアント。
@@ -114,11 +113,16 @@ class OllamaClient:
 
         if system_prompt is None:
             system_prompt = (
-                "あなたはトレーニングデータを分析する"
-                "日本語のアシスタントです。"
-                "提示されていない数値は推測せず、"
-                "客観的で分かりやすく回答してください。"
-                "医学的な診断は行わないでください。"
+                "あなたは日本語専用の"
+                "トレーニング支援アシスタントです。"
+                "回答はすべて自然な日本語で記述してください。"
+                "韓国語、中国語などを混在させないでください。"
+                "日付はYYYY-MM-DD時点と記述してください。"
+                "提示されていない数値は推測しないでください。"
+                "Python側で提示された数値とメニュー構成を"
+                "勝手に変更しないでください。"
+                "健康状態を断定せず、"
+                "医学的診断を行わないでください。"
             )
 
         request_data = {
@@ -127,7 +131,7 @@ class OllamaClient:
             "prompt": prompt.strip(),
             "stream": False,
             "options": {
-                "temperature": 0.2,
+                "temperature": 0.1,
             },
         }
 
