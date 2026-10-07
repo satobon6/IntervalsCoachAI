@@ -1,0 +1,2 @@
+# IntervalsCoachAI
+AIを用いたトレーニングアプリ
